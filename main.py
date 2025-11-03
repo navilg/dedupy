@@ -211,7 +211,7 @@ class MediaDeduplicator:
         logger.info(f"Total size to clean: {self._format_size(self.total_size_to_clean)}")
         logger.info(f"Found {len(self.duplicate_groups)} duplicate groups")
     
-    def _format_size(self, size_bytes: int) -> str:
+    def _format_size(self, size_bytes: float) -> str:
         """Format file size in human readable format."""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
             if size_bytes < 1024.0:
