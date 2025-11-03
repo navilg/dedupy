@@ -22,9 +22,9 @@ pip install -r requirements.txt
 ```
 
 Required dependencies:
-- Python 3.12+
-- Pillow (PIL) for image processing
-- imagehash for perceptual hashing
+* Python 3.12+
+* Pillow (PIL) for image processing
+* imagehash for perceptual hashing
 
 ## Usage
 
@@ -49,6 +49,8 @@ Review the above 3 files which are generated after scan.
 ```bash
 python main.py --action delete
 ```
+
+This will generate file `deletion_report.json` which contains report of files deleted in JSON format.
 
 ### Advanced Options (inferred from context)
 
