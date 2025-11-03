@@ -9,14 +9,12 @@ import hashlib
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Set, Tuple, Optional, Any
 import logging
 from dataclasses import dataclass
 import imagehash
 from PIL import Image, UnidentifiedImageError
 
-
-# %%
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -24,8 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# %%
 @dataclass
 class FileInfo:
     """Information about a file for deduplication."""
@@ -38,13 +34,13 @@ class FileInfo:
     sha256_last: Optional[str] = None
     phash: Optional[str] = None
 
-# %%
 class MediaDeduplicator:
     def __init__(self, directories_file: str, use_phash: bool = False):
         self.directories = self._load_directories(directories_file)
         self.use_phash = use_phash
         self.file_info_map: Dict[str, FileInfo] = {}
         self.duplicates_to_delete: List[Path] = []
+        self.duplicate_groups: List[Dict[str, Any]] = []
         self.total_size_to_clean = 0
         
     def _load_directories(self, directories_file: str) -> List[Path]:
@@ -160,7 +156,7 @@ class MediaDeduplicator:
         
         logger.info(f"Scanned {len(self.file_info_map)} files")
         
-        # Second pass: identify duplicates
+        # Second pass: identify duplicates and group them
         signature_groups: Dict[str, List[FileInfo]] = {}
         for file_info in self.file_info_map.values():
             signature = self._get_file_signature(file_info)
@@ -168,7 +164,7 @@ class MediaDeduplicator:
                 signature_groups[signature] = []
             signature_groups[signature].append(file_info)
         
-        # Identify files to delete (keep highest priority file in each group)
+        # Process each group of duplicates
         for signature, files in signature_groups.items():
             if len(files) > 1:
                 # Sort by priority (lowest priority number = highest priority)
@@ -176,17 +172,44 @@ class MediaDeduplicator:
                 
                 # Keep the highest priority file, mark others for deletion
                 kept_file = files_sorted[0]
-                for file_to_delete in files_sorted[1:]:
+                duplicates_to_delete = files_sorted[1:]
+                
+                # Add to deletion list
+                for file_to_delete in duplicates_to_delete:
                     self.duplicates_to_delete.append(file_to_delete.path)
                     self.total_size_to_clean += file_to_delete.size
                 
-                logger.info(f"Found {len(files)} duplicates for signature {signature[:50]}...")
+                # Store group information for detailed reporting
+                group_info = {
+                    "signature": signature,
+                    "kept_file": {
+                        "path": str(kept_file.path),
+                        "size": kept_file.size,
+                        "dir_priority": kept_file.dir_priority,
+                        "directory": str(kept_file.path.parent)
+                    },
+                    "duplicates": [
+                        {
+                            "path": str(dup.path),
+                            "size": dup.size,
+                            "dir_priority": dup.dir_priority,
+                            "directory": str(dup.path.parent)
+                        }
+                        for dup in duplicates_to_delete
+                    ],
+                    "total_duplicates": len(duplicates_to_delete),
+                    "total_duplicate_size": sum(dup.size for dup in duplicates_to_delete)
+                }
+                self.duplicate_groups.append(group_info)
+                
+                logger.info(f"Found {len(files)} duplicates")
                 logger.info(f"  Keeping: {kept_file.path}")
-                for dup in files_sorted[1:]:
+                for dup in duplicates_to_delete:
                     logger.info(f"  Marking for deletion: {dup.path}")
         
         logger.info(f"Found {len(self.duplicates_to_delete)} files to delete")
         logger.info(f"Total size to clean: {self._format_size(self.total_size_to_clean)}")
+        logger.info(f"Found {len(self.duplicate_groups)} duplicate groups")
     
     def _format_size(self, size_bytes: int) -> str:
         """Format file size in human readable format."""
@@ -203,23 +226,73 @@ class MediaDeduplicator:
             for file_path in self.duplicates_to_delete:
                 f.write(f"{file_path}\n")
         
-        # Save detailed report
+        # Save detailed report with kept files and their duplicates
         report = {
-            "total_files_scanned": len(self.file_info_map),
-            "duplicates_found": len(self.duplicates_to_delete),
-            "total_size_to_clean": self.total_size_to_clean,
-            "size_formatted": self._format_size(self.total_size_to_clean),
+            "summary": {
+                "total_files_scanned": len(self.file_info_map),
+                "duplicates_found": len(self.duplicates_to_delete),
+                "duplicate_groups": len(self.duplicate_groups),
+                "total_size_to_clean": self.total_size_to_clean,
+                "size_formatted": self._format_size(self.total_size_to_clean),
+                "directories_processed": [str(path) for path in self.directories]
+            },
+            "duplicate_groups": self.duplicate_groups,
             "files_to_delete": [str(path) for path in self.duplicates_to_delete],
             "scan_settings": {
                 "use_phash": self.use_phash,
-                "directories": [str(path) for path in self.directories]
+                "hash_method": "perceptual_hash" if self.use_phash else "md5_sha256_partial",
+                "directories_priority": [
+                    {"path": str(path), "priority": i} 
+                    for i, path in enumerate(self.directories)
+                ]
             }
         }
         
         with open('deduplication_report.json', 'w') as f:
             json.dump(report, f, indent=2)
         
+        # Also create a human-readable summary
+        self._create_human_readable_summary(report)
+        
         logger.info("Scan results saved to duplicates_to_delete.txt and deduplication_report.json")
+    
+    def _create_human_readable_summary(self, report: Dict[str, Any]):
+        """Create a human-readable summary file."""
+        with open('deduplication_summary.txt', 'w') as f:
+            f.write("MEDIA DEDUPLICATION REPORT\n")
+            f.write("=" * 50 + "\n\n")
+            
+            f.write("SUMMARY:\n")
+            f.write(f"Total files scanned: {report['summary']['total_files_scanned']}\n")
+            f.write(f"Duplicate files found: {report['summary']['duplicates_found']}\n")
+            f.write(f"Duplicate groups: {report['summary']['duplicate_groups']}\n")
+            f.write(f"Total space to reclaim: {report['summary']['size_formatted']}\n\n")
+            
+            f.write("DIRECTORIES (in priority order):\n")
+            for i, dir_info in enumerate(report['scan_settings']['directories_priority']):
+                f.write(f"  {i+1}. {dir_info['path']} (Priority: {dir_info['priority']})\n")
+            f.write("\n")
+            
+            f.write("DUPLICATE GROUPS DETAILS:\n")
+            f.write("-" * 50 + "\n")
+            
+            for i, group in enumerate(report['duplicate_groups'], 1):
+                f.write(f"\nGROUP {i}:\n")
+                f.write(f"Signature: {group['signature'][:100]}...\n")
+                f.write(f"Kept file: {group['kept_file']['path']}\n")
+                f.write(f"  Size: {self._format_size(group['kept_file']['size'])}\n")
+                f.write(f"  Directory priority: {group['kept_file']['dir_priority']}\n")
+                
+                f.write(f"Duplicates to delete ({group['total_duplicates']} files):\n")
+                for j, dup in enumerate(group['duplicates'], 1):
+                    f.write(f"  {j}. {dup['path']}\n")
+                    f.write(f"     Size: {self._format_size(dup['size'])}\n")
+                    f.write(f"     Directory priority: {dup['dir_priority']}\n")
+                
+                f.write(f"Total duplicate size in group: {self._format_size(group['total_duplicate_size'])}\n")
+            
+            f.write(f"\nTOTAL FILES TO DELETE: {len(report['files_to_delete'])}\n")
+            f.write(f"TOTAL SPACE TO RECLAIM: {report['summary']['size_formatted']}\n")
     
     def delete_files(self):
         """Delete files identified during scan."""
@@ -250,11 +323,21 @@ class MediaDeduplicator:
             except (IOError, OSError) as e:
                 logger.error(f"Error deleting {file_path}: {e}")
         
+        # Create deletion report
+        deletion_report = {
+            "deleted_files_count": deleted_count,
+            "deleted_files_size": deleted_size,
+            "deleted_size_formatted": self._format_size(deleted_size),
+            "failed_to_delete": len(files_to_delete) - deleted_count,
+            "deleted_files": [str(path) for path in files_to_delete if not path.exists()]
+        }
+        
+        with open('deletion_report.json', 'w') as f:
+            json.dump(deletion_report, f, indent=2)
+        
         logger.info(f"Successfully deleted {deleted_count} files")
         logger.info(f"Freed space: {self._format_size(deleted_size)}")
-
-
-# %%
+        logger.info("Deletion report saved to deletion_report.json")
 
 def main():
     parser = argparse.ArgumentParser(description="Deduplicate media files across directories")
@@ -282,7 +365,6 @@ def main():
     except Exception as e:
         logger.error(f"Error: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
