@@ -9,7 +9,7 @@ import hashlib
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Set, Tuple, Optional, Any
+from typing import Dict, List, Optional, Any
 import logging
 from dataclasses import dataclass
 import imagehash
