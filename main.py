@@ -22,6 +22,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+excluded_extensions = [".xmp", ".aae", ".db", ".ini", ".txt", ".json", ".xml", ".lnk"]
+
 @dataclass
 class FileInfo:
     """Information about a file for deduplication."""
@@ -147,6 +149,9 @@ class MediaDeduplicator:
             for root, _, files in os.walk(directory):
                 for file in files:
                     file_path = Path(root) / file
+                    if file_path.suffix.lower() in excluded_extensions:
+                        logger.debug(f"Skipping excluded file {file_path}")
+                        continue
                     try:
                         file_info = self._get_file_info(file_path, dir_priority)
                         signature = self._get_file_signature(file_info)
